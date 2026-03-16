@@ -1,5 +1,5 @@
 module MarchMadnessOptimizer
-using Statistics, JuMP, GLPK, DelimitedFiles
+using Statistics, JuMP, HiGHS, DelimitedFiles
 
 export initialize_teams, create_first_round_matchups, initialize_tournament_structure,
        create_realistic_advancement_probs, load_teams_and_probs,
@@ -352,8 +352,7 @@ function optimize_bracket(teams, games, advancement_probs;
                          championship_winner=nothing,
                          championship_runner_up=nothing)
     # Create optimization model
-    model = Model(GLPK.Optimizer)
-    set_optimizer_attribute(model, "msg_lev", GLPK.GLP_MSG_ALL)  # Full messaging
+    model = Model(HiGHS.Optimizer)
     
     # Decision variables: w[g,t] = 1 if team t wins game g
     @variable(model, w[1:TOTAL_GAMES, 1:NUM_TEAMS], Bin)
@@ -617,55 +616,60 @@ end
 
 Print the bracket in a readable format, showing all games and winners.
 """
+function team_label(t::Team)
+    has_name = t.name != "" && !startswith(t.name, "Team ")
+    has_name ? "$(t.name) ($(t.region)$(t.seed))" : "$(t.region)$(t.seed)"
+end
+
 function print_bracket(bracket, teams, games)
     println("\n===== TOURNAMENT BRACKET RESULTS =====\n")
-    
+
     # Print each round
     round_names = ["First Round", "Second Round", "Sweet 16", "Elite 8", "Final Four", "Championship"]
-    
+
     for r in 1:NUM_ROUNDS
         println(round_names[r] * ":")
-        
+
         start_game = r == 1 ? 1 : sum(GAMES_PER_ROUND[1:(r-1)]) + 1
         end_game = sum(GAMES_PER_ROUND[1:r])
-        
+
         for g in start_game:end_game
             game = games[g]
             winner_id = bracket.winners[g]
             winner = teams[winner_id]
-            
+
             # Determine the teams that played in this game
             if r == 1
                 # First round has predetermined matchups
                 team1_id, team2_id = game.team1_id, game.team2_id
                 team1, team2 = teams[team1_id], teams[team2_id]
-                
-                is_upset = (team1.seed < team2.seed && winner_id == team2_id) || 
+
+                is_upset = (team1.seed < team2.seed && winner_id == team2_id) ||
                            (team1.seed > team2.seed && winner_id == team1_id)
-                
+
                 upset_str = is_upset ? " (UPSET!)" : ""
-                println("  Game $g: $(team1.region)$(team1.seed) vs $(team2.region)$(team2.seed) → $(winner.region)$(winner.seed) advances$upset_str")
+                println("  Game $g: $(team_label(team1)) vs $(team_label(team2)) → $(team_label(winner)) advances$upset_str")
             else
                 # Later rounds need to look at previous winners
                 prev_games = filter(prev_g -> games[prev_g].next_game == g, 1:(g-1))
-                
+
                 if length(prev_games) != 2
                     error("Expected 2 previous games for game $g, found $(length(prev_games))")
                 end
-                
+
                 prev_game1, prev_game2 = prev_games
                 team1_id, team2_id = bracket.winners[prev_game1], bracket.winners[prev_game2]
                 team1, team2 = teams[team1_id], teams[team2_id]
-                
-                is_upset = (team1.seed < team2.seed && winner_id == team2_id) || 
+
+                is_upset = (team1.seed < team2.seed && winner_id == team2_id) ||
                            (team1.seed > team2.seed && winner_id == team1_id)
-                
+
                 upset_str = is_upset ? " (UPSET!)" : ""
-                
+
                 if r == NUM_ROUNDS
-                    println("  Game $g: $(team1.region)$(team1.seed) vs $(team2.region)$(team2.seed) → $(winner.region)$(winner.seed) CHAMPION$upset_str")
+                    println("  Game $g: $(team_label(team1)) vs $(team_label(team2)) → $(team_label(winner)) CHAMPION$upset_str")
                 else
-                    println("  Game $g: $(team1.region)$(team1.seed) vs $(team2.region)$(team2.seed) → $(winner.region)$(winner.seed) advances$upset_str")
+                    println("  Game $g: $(team_label(team1)) vs $(team_label(team2)) → $(team_label(winner)) advances$upset_str")
                 end
             end
         end
@@ -741,9 +745,9 @@ function analyze_bracket(bracket, teams, games)
     for g in (sum(GAMES_PER_ROUND[1:4])-3):sum(GAMES_PER_ROUND[1:4])
         winner_id = bracket.winners[g]
         winner = teams[winner_id]
-        println("  $(winner.region)$(winner.seed)")
+        println("  $(team_label(winner))")
     end
-    
+
     # Championship Teams
     g_semis = [61, 62]
     println("\nChampionship Matchup:")
@@ -753,8 +757,8 @@ function analyze_bracket(bracket, teams, games)
     team2 = teams[team2_id]
     winner_id = bracket.winners[63]
     winner = teams[winner_id]
-    
-    println("  $(team1.region)$(team1.seed) vs $(team2.region)$(team2.seed) → $(winner.region)$(winner.seed) CHAMPION")
+
+    println("  $(team_label(team1)) vs $(team_label(team2)) → $(team_label(winner)) CHAMPION")
 end
 
 """
@@ -899,8 +903,7 @@ function run_with_custom_final_four(; final_four_teams,
 
     
     # Create optimization model
-    model = Model(GLPK.Optimizer)
-    set_optimizer_attribute(model, "msg_lev", GLPK.GLP_MSG_ALL)  # Reduce output
+    model = Model(HiGHS.Optimizer)
     
     # Decision variables: w[g,t] = 1 if team t wins game g
     @variable(model, w[1:TOTAL_GAMES, 1:NUM_TEAMS], Bin)
@@ -1087,8 +1090,23 @@ function run_with_custom_final_four(; final_four_teams,
         end
     end
     
-    # Objective: Maximize expected score using simplified scoring
-    @objective(model, Max, sum(w[g, t] * advancement_probs[(t, games[g].round)] for g in 1:TOTAL_GAMES, t in 1:NUM_TEAMS))
+    # Objective: Maximize expected score
+    # Using Fibonacci sequence for scoring: 5, 8, 13, 21, 34, 55
+    fibonacci = [5, 8, 13, 21, 34, 55]
+
+    objective_expr = 0
+    for r in 1:NUM_ROUNDS
+        start_game = r == 1 ? 1 : sum(GAMES_PER_ROUND[1:(r-1)]) + 1
+        end_game = sum(GAMES_PER_ROUND[1:r])
+
+        for g in start_game:end_game
+            for t in 1:NUM_TEAMS
+                objective_expr += advancement_probs[(t, r)] * (fibonacci[r] + teams[t].seed) * w[g, t]
+            end
+        end
+    end
+
+    @objective(model, Max, objective_expr)
     
     # Solve the model
     println("Solving model...")
@@ -1100,20 +1118,36 @@ function run_with_custom_final_four(; final_four_teams,
         println("Reason: ", raw_status(model))
         error("No optimal solution found")
     end
-    
+
     # Extract the results
     winners = Dict{Int, Int}()
-    for g in 1:TOTAL_GAMES
-        for t in 1:NUM_TEAMS
-            if value(w[g, t]) > 0.5
-                winners[g] = t
-                break
+    upsets_by_round = Dict{Int, Int}()
+
+    for r in 1:NUM_ROUNDS
+        upsets_by_round[r] = 0
+        start_game = r == 1 ? 1 : sum(GAMES_PER_ROUND[1:(r-1)]) + 1
+        end_game = sum(GAMES_PER_ROUND[1:r])
+
+        for g in start_game:end_game
+            for t in 1:NUM_TEAMS
+                if value(w[g, t]) > 0.5
+                    winners[g] = t
+                    if value(is_upset[g]) > 0.5
+                        upsets_by_round[r] += 1
+                    end
+                    break
+                end
             end
         end
     end
-    
-    # Return a simplified bracket
-    return Bracket(winners, 0.0, Dict{Int, Int}())
+
+    score = calculate_bracket_score(winners, teams, advancement_probs)
+    bracket = Bracket(winners, score, upsets_by_round)
+
+    print_bracket(bracket, teams, games)
+    analyze_bracket(bracket, teams, games)
+
+    return bracket
 end
 
 """
@@ -1262,7 +1296,7 @@ function print_bracket_with_upsets(bracket, teams, games, upset_pct=0.5)
                     upset_str = ""
                 end
                 
-                println("  Game $g: $(team1.region)$(team1.seed) vs $(team2.region)$(team2.seed) → $(winner.region)$(winner.seed) advances$upset_str")
+                println("  Game $g: $(team_label(team1)) vs $(team_label(team2)) → $(team_label(winner)) advances$upset_str")
             else
                 # Later rounds need to look at previous winners
                 prev_games = []
@@ -1271,37 +1305,37 @@ function print_bracket_with_upsets(bracket, teams, games, upset_pct=0.5)
                         push!(prev_games, prev_g)
                     end
                 end
-                
+
                 if length(prev_games) != 2
                     println("  Game $g: Unable to determine matchup (expected 2 previous games, found $(length(prev_games)))")
                     continue
                 end
-                
+
                 prev_game1, prev_game2 = prev_games
-                
+
                 if !haskey(bracket.winners, prev_game1) || !haskey(bracket.winners, prev_game2)
                     println("  Game $g: Missing previous game winners")
                     continue
                 end
-                
+
                 team1_id, team2_id = bracket.winners[prev_game1], bracket.winners[prev_game2]
                 team1, team2 = teams[team1_id], teams[team2_id]
-                
+
                 # Check if this is an upset
-                is_upset = (team1.seed < team2.seed && winner_id == team2_id) || 
+                is_upset = (team1.seed < team2.seed && winner_id == team2_id) ||
                            (team1.seed > team2.seed && winner_id == team1_id)
-                
+
                 if is_upset
                     upsets_by_round[r] += 1
                     upset_str = " [UPSET!]"
                 else
                     upset_str = ""
                 end
-                
+
                 if r == NUM_ROUNDS
-                    println("  Game $g: $(team1.region)$(team1.seed) vs $(team2.region)$(team2.seed) → $(winner.region)$(winner.seed) CHAMPION$upset_str")
+                    println("  Game $g: $(team_label(team1)) vs $(team_label(team2)) → $(team_label(winner)) CHAMPION$upset_str")
                 else
-                    println("  Game $g: $(team1.region)$(team1.seed) vs $(team2.region)$(team2.seed) → $(winner.region)$(winner.seed) advances$upset_str")
+                    println("  Game $g: $(team_label(team1)) vs $(team_label(team2)) → $(team_label(winner)) advances$upset_str")
                 end
             end
         end
