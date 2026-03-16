@@ -1,8 +1,9 @@
 module MarchMadnessOptimizer
-using Statistics, JuMP, GLPK
+using Statistics, JuMP, GLPK, DelimitedFiles
 
 export initialize_teams, create_first_round_matchups, initialize_tournament_structure,
-       create_realistic_advancement_probs, optimize_bracket, calculate_bracket_score,
+       create_realistic_advancement_probs, load_teams_and_probs,
+       optimize_bracket, calculate_bracket_score,
        print_bracket, analyze_bracket, run_tournament_optimization,
        run_with_custom_final_four
 
@@ -198,8 +199,135 @@ function create_realistic_advancement_probs(teams)
 end
 
 """
-    optimize_bracket(teams, games, advancement_probs; 
+    load_teams_and_probs(filepath)
+
+Load teams and advancement probabilities from a 538-style data file.
+The file has a header row followed by lines like:
+    1E  Duke              99.5   84.6   69.4   52.5   35.6   22.9
+
+Returns (teams, advancement_probs) in the same Dict formats as
+initialize_teams() and create_realistic_advancement_probs().
+"""
+function load_teams_and_probs(filepath)
+    lines = readlines(filepath)
+
+    # Skip header line(s) and blank lines
+    data_lines = String[]
+    for line in lines
+        stripped = strip(line)
+        isempty(stripped) && continue
+        # Skip header: contains "Rd2" or "Swt16"
+        if occursin("Rd2", stripped) || occursin("Swt16", stripped)
+            continue
+        end
+        push!(data_lines, line)
+    end
+
+    # Parse each line into (seed, region, name, probs[1:6])
+    parsed = []
+    for line in data_lines
+        # The prefix is like " 1E ", " 1MW", "11MW", "16S " etc.
+        # Use regex to extract seed+region, team name, and 6 probability values
+        m = match(r"^\s*(\d+)(E|W|MW|S)\s+(.+?)\s+([\d.<]+)\s+([\d.<]+)\s+([\d.<]+)\s+([\d.<]+)\s+([\d.<]+)\s+([\d.<]+)\s*$", line)
+        if m === nothing
+            @warn "Could not parse line: $line"
+            continue
+        end
+
+        seed = parse(Int, m[1])
+        region = String(m[2])
+        name = strip(String(m[3]))
+
+        # Parse probability values, handling "<.001"
+        function parse_prob(s)
+            s = strip(s)
+            if startswith(s, "<")
+                return 0.0
+            else
+                return parse(Float64, s) / 100.0
+            end
+        end
+
+        probs = [parse_prob(m[i]) for i in 4:9]
+        push!(parsed, (seed=seed, region=region, name=name, probs=probs))
+    end
+
+    # Handle play-in games: when two teams share the same region+seed,
+    # keep the one with the higher R32 (round 1) probability
+    key_groups = Dict{Tuple{Int,String}, Vector{eltype(parsed)}}()
+    for entry in parsed
+        key = (entry.seed, entry.region)
+        if !haskey(key_groups, key)
+            key_groups[key] = [entry]
+        else
+            push!(key_groups[key], entry)
+        end
+    end
+
+    deduped = []
+    for (key, group) in key_groups
+        if length(group) == 1
+            push!(deduped, group[1])
+        else
+            # Keep the team with higher R32 (round 1) probability
+            best = argmax(e -> e.probs[1], group)
+            push!(deduped, best)
+            dropped_names = [e.name for e in group if e !== best]
+            println("Play-in: keeping $(best.name) over $(join(dropped_names, ", ")) for seed $(key[1])$(key[2])")
+        end
+    end
+
+    # Verify we have exactly 64 teams
+    if length(deduped) != 64
+        error("Expected 64 teams after deduplication, got $(length(deduped))")
+    end
+
+    # Assign team IDs using the same convention as initialize_teams():
+    # regions ["E","W","MW","S"], seeds 1-16, sequential IDs
+    teams = Dict{Int, Team}()
+    team_id = 1
+    for region in REGIONS
+        for seed in 1:16
+            # Find the parsed entry for this region+seed
+            entry = nothing
+            for e in deduped
+                if e.region == region && e.seed == seed
+                    entry = e
+                    break
+                end
+            end
+            if entry === nothing
+                error("No team found for region $region seed $seed")
+            end
+            teams[team_id] = Team(team_id, region, seed, entry.name)
+            team_id += 1
+        end
+    end
+
+    # Build advancement_probs dict: (team_id, round) -> probability
+    # Column mapping: Rd2→round1, Swt16→round2, Elite8→round3, Final4→round4, Final→round5, Champ→round6
+    advancement_probs = Dict{Tuple{Int, Int}, Float64}()
+    for (id, team) in teams
+        # Find the parsed entry matching this team
+        entry = nothing
+        for e in deduped
+            if e.region == team.region && e.seed == team.seed
+                entry = e
+                break
+            end
+        end
+        for r in 1:NUM_ROUNDS
+            advancement_probs[(id, r)] = entry.probs[r]
+        end
+    end
+
+    return teams, advancement_probs
+end
+
+"""
+    optimize_bracket(teams, games, advancement_probs;
                     apply_upset_constraints=false,
+                    upset_prop=0.5,
                     final_four_teams=nothing,
                     championship_winner=nothing,
                     championship_runner_up=nothing)
@@ -210,14 +338,16 @@ Parameters:
 - games: Dictionary mapping game ID to Game object
 - advancement_probs: Dictionary mapping (team_id, round) to probability
 - apply_upset_constraints: If true, enforce minimum upsets per round
+- upset_prop: Fraction of games per round that must be upsets (default 0.5)
 - final_four_teams: Dictionary mapping region to seed for Final Four teams
 - championship_winner: Tuple (region, seed) for the championship winner
 - championship_runner_up: Tuple (region, seed) for the championship runner-up
 
 Returns a Bracket object with the winning teams for each game.
 """
-function optimize_bracket(teams, games, advancement_probs; 
+function optimize_bracket(teams, games, advancement_probs;
                          apply_upset_constraints=false,
+                         upset_prop=0.5,
                          final_four_teams=nothing,
                          championship_winner=nothing,
                          championship_runner_up=nothing)
@@ -266,14 +396,18 @@ function optimize_bracket(teams, games, advancement_probs;
         end
     end
     
+    # Seed-difference variable for upset detection in rounds 2-6
+    # D[g] = seed(winner) - seed(loser); D[g] > 0 means upset
+    @variable(model, -15 <= D[1:TOTAL_GAMES] <= 15)
+
     # Constraints for later rounds
     for r in 2:NUM_ROUNDS
         start_game = sum(GAMES_PER_ROUND[1:(r-1)]) + 1
         end_game = sum(GAMES_PER_ROUND[1:r])
-        
+
         for g in start_game:end_game
             game = games[g]
-            
+
             # Determine which games feed into this one
             prev_games = []
             for prev_g in 1:(start_game-1)
@@ -281,86 +415,30 @@ function optimize_bracket(teams, games, advancement_probs;
                     push!(prev_games, prev_g)
                 end
             end
-            
+
             # A team can only win this game if it won one of the previous games
             for t in 1:NUM_TEAMS
                 @constraint(model, w[g, t] <= sum(w[prev_g, t] for prev_g in prev_games))
-                
+
                 # A team plays in this game if it won one of the previous games
                 @constraint(model, plays_in[g, t] == sum(w[prev_g, t] for prev_g in prev_games))
             end
-            
+
             # Exactly one team wins this game
             @constraint(model, sum(w[g, t] for t in 1:NUM_TEAMS) == 1)
-            
-            # For tracking upsets in later rounds, we need additional variables
-            # to ensure that is_upset[g] is properly connected to actual upsets
-            
-            # Store all potential upset conditions for this game
-            upset_conditions = []
-            
-            # Create a binary variable for each potential matchup in this game
-            for t1 in 1:NUM_TEAMS
-                for t2 in (t1+1):NUM_TEAMS
-                    # Skip if teams are from the same region in Final Four (they can't meet)
-                    if r >= 5 && teams[t1].region == teams[t2].region
-                        continue
-                    end
-                    
-                    # matchup[t1,t2] = 1 if t1 and t2 play against each other in game g
-                    matchup = @variable(model, binary=true)
-                    
-                    # Set matchup = 1 if both teams play in this game
-                    @constraint(model, matchup <= plays_in[g, t1])
-                    @constraint(model, matchup <= plays_in[g, t2])
-                    @constraint(model, matchup >= plays_in[g, t1] + plays_in[g, t2] - 1)
-                    
-                    # Create upset condition variables for both possible outcomes
-                    team1_seed = teams[t1].seed
-                    team2_seed = teams[t2].seed
-                    
-                    if team1_seed < team2_seed  # t1 is better seeded
-                        # If t2 wins, it's an upset
-                        upset_var = @variable(model, binary=true)
-                        
-                        # upset_var is 1 if and only if this matchup occurs AND t2 wins
-                        @constraint(model, upset_var <= matchup)
-                        @constraint(model, upset_var <= w[g, t2])
-                        @constraint(model, upset_var >= matchup + w[g, t2] - 1)
-                        
-                        # Add this to our list of potential upset conditions
-                        push!(upset_conditions, upset_var)
-                    elseif team1_seed > team2_seed  # t2 is better seeded
-                        # If t1 wins, it's an upset
-                        upset_var = @variable(model, binary=true)
-                        
-                        # upset_var is 1 if and only if this matchup occurs AND t1 wins
-                        @constraint(model, upset_var <= matchup)
-                        @constraint(model, upset_var <= w[g, t1])
-                        @constraint(model, upset_var >= matchup + w[g, t1] - 1)
-                        
-                        # Add this to our list of potential upset conditions
-                        push!(upset_conditions, upset_var)
-                    end
-                end
-            end
-            
-            # is_upset[g] is 1 if and only if any of the upset conditions are true
-            if !isempty(upset_conditions)
-                # is_upset[g] is at least 1 if any upset condition is true
-                @constraint(model, is_upset[g] <= sum(upset_conditions))
-                
-                # For each individual upset condition, if it's true, is_upset[g] must be 1
-                for uc in upset_conditions
-                    @constraint(model, is_upset[g] >= uc)
-                end
-            else
-                # If no upset conditions exist for this game, is_upset[g] must be 0
-                @constraint(model, is_upset[g] == 0)
-            end
+
+            # Seed-difference upset detection:
+            # D[g] = sum_t seed(t) * (2*w[g,t] - plays_in[g,t])
+            #       = seed(winner) - seed(loser)
+            # If D[g] > 0, the higher-seeded (worse) team won → upset
+            @constraint(model, D[g] == sum(teams[t].seed * (2*w[g,t] - plays_in[g,t]) for t in 1:NUM_TEAMS))
+
+            # Link D[g] to is_upset[g] via big-M (M=15, max seed difference)
+            @constraint(model, D[g] <= 15 * is_upset[g])          # D<=0 → is_upset can be 0
+            @constraint(model, D[g] >= 16 * is_upset[g] - 15)     # D>=1 → is_upset must be 1
         end
     end
-    
+
     # Add constraints for specific Final Four teams if requested
     if final_four_teams !== nothing
         # Teams that advance to Final Four are the winners of Elite 8 games (games 57-60)
@@ -442,7 +520,7 @@ function optimize_bracket(teams, games, advancement_probs;
     if apply_upset_constraints
         # Modified to add more realistic upset distributions:
         # Higher upset percentages in early rounds, lower in later rounds
-        upset_percentages = [0.5, 0.5, 0.4, 0.3, 0.25, 0.2]
+        upset_percentages = upset_prop * ones(NUM_ROUNDS)
         
         for r in 1:NUM_ROUNDS
             start_game = r == 1 ? 1 : sum(GAMES_PER_ROUND[1:(r-1)]) + 1
@@ -681,14 +759,18 @@ end
 
 """
     run_tournament_optimization(;
-        apply_upset_constraints=false, 
+        filepath=nothing,
+        apply_upset_constraints=false,
+        upset_prop=0.5,
         final_four_teams=nothing,
         championship_winner=nothing,
         championship_runner_up=nothing)
 
 Run the full tournament optimization with optional constraints.
 Parameters:
+- filepath: Path to 538-style probability data file (uses generated data if nothing)
 - apply_upset_constraints: If true, enforce minimum upsets per round
+- upset_prop: Fraction of games per round that must be upsets (default 0.5)
 - final_four_teams: Dictionary mapping region to seed for Final Four teams
 - championship_winner: Tuple (region, seed) for the championship winner
 - championship_runner_up: Tuple (region, seed) for the championship runner-up
@@ -696,15 +778,21 @@ Parameters:
 Returns a tuple of (bracket, teams, games).
 """
 function run_tournament_optimization(;
-        apply_upset_constraints=false, 
+        filepath=nothing,
+        apply_upset_constraints=false,
+        upset_prop=0.5,
         final_four_teams=nothing,
         championship_winner=nothing,
         championship_runner_up=nothing)
-        
+
     # Initialize teams and tournament structure
-    teams = initialize_teams()
+    if filepath !== nothing
+        teams, advancement_probs = load_teams_and_probs(filepath)
+    else
+        teams = initialize_teams()
+        advancement_probs = create_realistic_advancement_probs(teams)
+    end
     games = initialize_tournament_structure(teams)
-    advancement_probs = create_realistic_advancement_probs(teams)
     
     # Print advancement probabilities by seed
     println("Advancement Probabilities By Seed for Round 1:")
@@ -732,10 +820,11 @@ function run_tournament_optimization(;
     
     # Optimize the bracket
     bracket = optimize_bracket(
-        teams, 
-        games, 
-        advancement_probs; 
+        teams,
+        games,
+        advancement_probs;
         apply_upset_constraints=apply_upset_constraints,
+        upset_prop=upset_prop,
         final_four_teams=final_four_teams,
         championship_winner=championship_winner,
         championship_runner_up=championship_runner_up
@@ -761,15 +850,20 @@ Parameters:
 
 Returns the optimized bracket.
 """
-function run_with_custom_final_four(; final_four_teams, 
-        championship_matchup=nothing, 
+function run_with_custom_final_four(; final_four_teams,
+        filepath=nothing,
+        championship_matchup=nothing,
         semifinal_structure=Dict("E" => 61, "MW" => 61, "W" => 62, "S" => 62),
         apply_upset_constraints=false,
         upset_prop=0.5)
     # Initialize teams and tournament structure
-    teams = initialize_teams()
+    if filepath !== nothing
+        teams, advancement_probs = load_teams_and_probs(filepath)
+    else
+        teams = initialize_teams()
+        advancement_probs = create_realistic_advancement_probs(teams)
+    end
     games = initialize_tournament_structure(teams)
-    advancement_probs = create_realistic_advancement_probs(teams)
 
     # Define Elite 8 games mapping
     elite_8_games = Dict(
@@ -849,14 +943,17 @@ function run_with_custom_final_four(; final_four_teams,
         end
     end
     
+    # Seed-difference variable for upset detection in rounds 2-6
+    @variable(model, -15 <= D[1:TOTAL_GAMES] <= 15)
+
     # Constraints for later rounds
     for r in 2:NUM_ROUNDS
         start_game = sum(GAMES_PER_ROUND[1:(r-1)]) + 1
         end_game = sum(GAMES_PER_ROUND[1:r])
-        
+
         for g in start_game:end_game
             game = games[g]
-            
+
             # Determine which games feed into this one
             prev_games = []
             for prev_g in 1:(start_game-1)
@@ -864,86 +961,25 @@ function run_with_custom_final_four(; final_four_teams,
                     push!(prev_games, prev_g)
                 end
             end
-            
+
             # A team can only win this game if it won one of the previous games
             for t in 1:NUM_TEAMS
                 @constraint(model, w[g, t] <= sum(w[prev_g, t] for prev_g in prev_games))
-                
+
                 # A team plays in this game if it won one of the previous games
                 @constraint(model, plays_in[g, t] == sum(w[prev_g, t] for prev_g in prev_games))
             end
-            
+
             # Exactly one team wins this game
             @constraint(model, sum(w[g, t] for t in 1:NUM_TEAMS) == 1)
-            
-            # For tracking upsets in later rounds, we need additional variables
-            # to ensure that is_upset[g] is properly connected to actual upsets
-            
-            # Store all potential upset conditions for this game
-            upset_conditions = []
-            
-            # Create a binary variable for each potential matchup in this game
-            for t1 in 1:NUM_TEAMS
-                for t2 in (t1+1):NUM_TEAMS
-                    # Skip if teams are from the same region in Final Four (they can't meet)
-                    if r >= 5 && teams[t1].region == teams[t2].region
-                        continue
-                    end
-                    
-                    # matchup[t1,t2] = 1 if t1 and t2 play against each other in game g
-                    matchup = @variable(model, binary=true)
-                    
-                    # Set matchup = 1 if both teams play in this game
-                    @constraint(model, matchup <= plays_in[g, t1])
-                    @constraint(model, matchup <= plays_in[g, t2])
-                    @constraint(model, matchup >= plays_in[g, t1] + plays_in[g, t2] - 1)
-                    
-                    # Create upset condition variables for both possible outcomes
-                    team1_seed = teams[t1].seed
-                    team2_seed = teams[t2].seed
-                    
-                    if team1_seed < team2_seed  # t1 is better seeded
-                        # If t2 wins, it's an upset
-                        upset_var = @variable(model, binary=true)
-                        
-                        # upset_var is 1 if and only if this matchup occurs AND t2 wins
-                        @constraint(model, upset_var <= matchup)
-                        @constraint(model, upset_var <= w[g, t2])
-                        @constraint(model, upset_var >= matchup + w[g, t2] - 1)
-                        
-                        # Add this to our list of potential upset conditions
-                        push!(upset_conditions, upset_var)
-                    elseif team1_seed > team2_seed  # t2 is better seeded
-                        # If t1 wins, it's an upset
-                        upset_var = @variable(model, binary=true)
-                        
-                        # upset_var is 1 if and only if this matchup occurs AND t1 wins
-                        @constraint(model, upset_var <= matchup)
-                        @constraint(model, upset_var <= w[g, t1])
-                        @constraint(model, upset_var >= matchup + w[g, t1] - 1)
-                        
-                        # Add this to our list of potential upset conditions
-                        push!(upset_conditions, upset_var)
-                    end
-                end
-            end
-            
-            # is_upset[g] is 1 if and only if any of the upset conditions are true
-            if !isempty(upset_conditions)
-                # is_upset[g] is at least 1 if any upset condition is true
-                @constraint(model, is_upset[g] <= sum(upset_conditions))
-                
-                # For each individual upset condition, if it's true, is_upset[g] must be 1
-                for uc in upset_conditions
-                    @constraint(model, is_upset[g] >= uc)
-                end
-            else
-                # If no upset conditions exist for this game, is_upset[g] must be 0
-                @constraint(model, is_upset[g] == 0)
-            end
+
+            # Seed-difference upset detection
+            @constraint(model, D[g] == sum(teams[t].seed * (2*w[g,t] - plays_in[g,t]) for t in 1:NUM_TEAMS))
+            @constraint(model, D[g] <= 15 * is_upset[g])
+            @constraint(model, D[g] >= 16 * is_upset[g] - 15)
         end
     end
-    
+
     # Instead of tracing full paths, create a reduced set of constraints:
     
     # 1. Find the Elite 8 games for each region
