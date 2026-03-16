@@ -3,7 +3,7 @@ using Statistics, JuMP, HiGHS, DelimitedFiles
 
 export initialize_teams, create_first_round_matchups, initialize_tournament_structure,
        create_realistic_advancement_probs, load_teams_and_probs,
-       optimize_bracket, calculate_bracket_score,
+       resolve_team_id, optimize_bracket, calculate_bracket_score,
        print_bracket, analyze_bracket, run_tournament_optimization,
        run_with_custom_final_four
 
@@ -14,6 +14,8 @@ const GAMES_PER_ROUND = [32, 16, 8, 4, 2, 1]
 const TOTAL_GAMES = sum(GAMES_PER_ROUND)
 const REGIONS = ["E", "W", "MW", "S"]
 const TEAMS_PER_REGION = NUM_TEAMS ÷ 4
+# Max "expected" seed to reach each round; anything higher is a Cinderella
+const CINDERELLA_THRESHOLDS = [8, 4, 2, 1, 1, 1]
 
 # Define a Team type with region and seed
 struct Team
@@ -35,9 +37,10 @@ end
 
 # Define a type to represent a bracket (i.e., a tournament outcome)
 struct Bracket
-    winners::Dict{Int, Int}  # Map from game ID to winning team ID
-    score::Float64           # Expected score of this bracket
-    upsets::Dict{Int, Int}   # Number of upsets per round
+    winners::Dict{Int, Int}       # Map from game ID to winning team ID
+    score::Float64                # Expected score of this bracket
+    upsets::Dict{Int, Int}        # Number of upsets per round
+    cinderellas::Dict{Int, Int}   # Number of cinderellas per round (empty if not cinderella_mode)
 end
 
 
@@ -59,6 +62,35 @@ function initialize_teams()
     end
     
     return teams
+end
+
+"""
+    resolve_team_id(teams, identifier::String)
+
+Resolve a team identifier (name like "BYU" or region+seed like "E6") to a team ID.
+"""
+function resolve_team_id(teams, identifier::String)
+    # Try exact name match (case-insensitive)
+    id_lower = lowercase(identifier)
+    for (id, team) in teams
+        if lowercase(team.name) == id_lower
+            return id
+        end
+    end
+    # Try region+seed format (e.g. "E6", "MW11")
+    m = match(r"^(E|W|MW|S)(\d+)$"i, identifier)
+    if m !== nothing
+        region = uppercase(String(m[1]))
+        seed = parse(Int, m[2])
+        for (id, team) in teams
+            if team.region == region && team.seed == seed
+                return id
+            end
+        end
+    end
+    # Collect available names for error message
+    names = sort([team.name for (_, team) in teams if team.name != ""])
+    error("Could not resolve team '$identifier'. Available: $(join(names[1:min(10,length(names))], ", "))...")
 end
 
 """
@@ -325,29 +357,27 @@ function load_teams_and_probs(filepath)
 end
 
 """
-    optimize_bracket(teams, games, advancement_probs;
-                    apply_upset_constraints=false,
-                    upset_prop=0.5,
-                    final_four_teams=nothing,
-                    championship_winner=nothing,
-                    championship_runner_up=nothing)
+    optimize_bracket(teams, games, advancement_probs; kwargs...)
 
 Optimize the bracket to maximize expected score.
-Parameters:
-- teams: Dictionary mapping team ID to Team object
-- games: Dictionary mapping game ID to Game object
-- advancement_probs: Dictionary mapping (team_id, round) to probability
-- apply_upset_constraints: If true, enforce minimum upsets per round
-- upset_prop: Fraction of games per round that must be upsets (default 0.5)
-- final_four_teams: Dictionary mapping region to seed for Final Four teams
-- championship_winner: Tuple (region, seed) for the championship winner
-- championship_runner_up: Tuple (region, seed) for the championship runner-up
 
-Returns a Bracket object with the winning teams for each game.
+Keyword arguments:
+- `apply_upset_constraints`: If true, enforce minimum upsets/cinderellas (default false)
+- `upset_prop`: Fraction of games that must be upsets/cinderellas (default 0.5)
+- `upset_mode`: `:per_round` (default) or `:per_region` (e.g. 1/3 upsets per region)
+- `cinderella_mode`: If true, count cinderellas instead of upsets (default false)
+- `forced_advancements`: Dict mapping team name/code to round they must reach
+  (e.g. `Dict("BYU" => 3)` forces BYU to the Sweet 16)
+- `final_four_teams`: Dict mapping region to seed for Final Four teams
+- `championship_winner`: Tuple (region, seed) for the championship winner
+- `championship_runner_up`: Tuple (region, seed) for the championship runner-up
 """
 function optimize_bracket(teams, games, advancement_probs;
                          apply_upset_constraints=false,
                          upset_prop=0.5,
+                         upset_mode=:per_round,
+                         cinderella_mode=false,
+                         forced_advancements=nothing,
                          final_four_teams=nothing,
                          championship_winner=nothing,
                          championship_runner_up=nothing)
@@ -515,19 +545,66 @@ function optimize_bracket(teams, games, advancement_probs;
         end
     end
     
-    # Apply upset constraints if requested
-    if apply_upset_constraints
-        # Modified to add more realistic upset distributions:
-        # Higher upset percentages in early rounds, lower in later rounds
-        upset_percentages = upset_prop * ones(NUM_ROUNDS)
-        
+    # Forced advancement constraints (e.g. "BYU must make the Sweet 16")
+    if forced_advancements !== nothing
+        for (team_identifier, target_round) in forced_advancements
+            team_id = resolve_team_id(teams, team_identifier)
+            team = teams[team_id]
+            println("  Forcing $(team.name) ($(team.region)$(team.seed)) to reach round $target_round")
+            if target_round >= 2
+                # Constrain team to win a game in round (target_round - 1).
+                # Advancement constraints cascade backwards automatically.
+                r = target_round - 1
+                start_game = r == 1 ? 1 : sum(GAMES_PER_ROUND[1:(r-1)]) + 1
+                end_game = sum(GAMES_PER_ROUND[1:r])
+                @constraint(model, sum(w[g, team_id] for g in start_game:end_game) >= 1)
+            end
+        end
+    end
+
+    # Cinderella variables: is_cinderella[g] = 1 if winner's seed > threshold for that round
+    if cinderella_mode
+        @variable(model, 1 <= winner_seed[1:TOTAL_GAMES] <= 16)
+        @variable(model, is_cinderella[1:TOTAL_GAMES], Bin)
+
+        for g in 1:TOTAL_GAMES
+            @constraint(model, winner_seed[g] == sum(teams[t].seed * w[g, t] for t in 1:NUM_TEAMS))
+        end
+
         for r in 1:NUM_ROUNDS
+            threshold = CINDERELLA_THRESHOLDS[r]
             start_game = r == 1 ? 1 : sum(GAMES_PER_ROUND[1:(r-1)]) + 1
             end_game = sum(GAMES_PER_ROUND[1:r])
-            
-            # At least the specified percentage of games in this round must be upsets
-            min_upsets = ceil(Int, GAMES_PER_ROUND[r] * upset_percentages[r])
-            @constraint(model, sum(is_upset[g] for g in start_game:end_game) >= min_upsets)
+            for g in start_game:end_game
+                @constraint(model, winner_seed[g] >= threshold + 1 - 16 * (1 - is_cinderella[g]))
+                @constraint(model, winner_seed[g] <= threshold + 16 * is_cinderella[g])
+            end
+        end
+    end
+
+    # Apply quota constraints (upsets or cinderellas)
+    if apply_upset_constraints
+        quota_var = cinderella_mode ? is_cinderella : is_upset
+        label = cinderella_mode ? "cinderella" : "upset"
+
+        if upset_mode == :per_round
+            for r in 1:NUM_ROUNDS
+                start_game = r == 1 ? 1 : sum(GAMES_PER_ROUND[1:(r-1)]) + 1
+                end_game = sum(GAMES_PER_ROUND[1:r])
+                min_count = ceil(Int, GAMES_PER_ROUND[r] * upset_prop)
+                @constraint(model, sum(quota_var[g] for g in start_game:end_game) >= min_count)
+            end
+        elseif upset_mode == :per_region
+            for region in REGIONS
+                region_games = [g for g in 1:60 if games[g].region == region]
+                min_count = ceil(Int, length(region_games) * upset_prop)
+                @constraint(model, sum(quota_var[g] for g in region_games) >= min_count)
+            end
+            ff_games = [g for g in 61:63 if g <= TOTAL_GAMES]
+            min_ff = ceil(Int, length(ff_games) * upset_prop)
+            @constraint(model, sum(quota_var[g] for g in ff_games) >= min_ff)
+        else
+            error("Unknown upset_mode: $upset_mode. Valid: :per_round, :per_region")
         end
     end
     
@@ -559,12 +636,14 @@ function optimize_bracket(teams, games, advancement_probs;
     if termination_status(model) == MOI.OPTIMAL
         winners = Dict{Int, Int}()
         upsets_by_round = Dict{Int, Int}()
-        
+        cinderellas_by_round = Dict{Int, Int}()
+
         for r in 1:NUM_ROUNDS
             upsets_by_round[r] = 0
+            cinderellas_by_round[r] = 0
             start_game = r == 1 ? 1 : sum(GAMES_PER_ROUND[1:(r-1)]) + 1
             end_game = sum(GAMES_PER_ROUND[1:r])
-            
+
             for g in start_game:end_game
                 for t in 1:NUM_TEAMS
                     if value(w[g, t]) > 0.5
@@ -572,16 +651,17 @@ function optimize_bracket(teams, games, advancement_probs;
                         if value(is_upset[g]) > 0.5
                             upsets_by_round[r] += 1
                         end
+                        if cinderella_mode && value(is_cinderella[g]) > 0.5
+                            cinderellas_by_round[r] += 1
+                        end
                         break
                     end
                 end
             end
         end
-        
-        # Calculate actual score of the bracket
+
         score = calculate_bracket_score(winners, teams, advancement_probs)
-        
-        return Bracket(winners, score, upsets_by_round)
+        return Bracket(winners, score, upsets_by_round, cinderellas_by_round)
     else
         println("Status: ", termination_status(model))
         println("Reason: ", raw_status(model))
@@ -678,18 +758,30 @@ function print_bracket(bracket, teams, games)
         upsets = bracket.upsets[r]
         games_in_round = GAMES_PER_ROUND[r]
         pct = upsets / games_in_round * 100
-        min_upsets = ceil(Int, games_in_round * 0.5)
-        
-        println("\nUpsets in $(round_names[r]): $upsets/$games_in_round ($(round(pct, digits=1))%) [Minimum required: $min_upsets]")
+        println("\nUpsets in $(round_names[r]): $upsets/$games_in_round ($(round(pct, digits=1))%)")
+
+        # Print cinderella statistics if available
+        if haskey(bracket.cinderellas, r) && bracket.cinderellas[r] > 0
+            cind = bracket.cinderellas[r]
+            cpct = cind / games_in_round * 100
+            threshold = CINDERELLA_THRESHOLDS[r]
+            println("Cinderellas in $(round_names[r]): $cind/$games_in_round ($(round(cpct, digits=1))%) [seed > $threshold]")
+        end
         println()
     end
-    
+
     # Print overall statistics
     total_upsets = sum(values(bracket.upsets))
     total_games = TOTAL_GAMES
     pct = total_upsets / total_games * 100
-    
     println("Total Upsets: $total_upsets/$total_games ($(round(pct, digits=1))%)")
+
+    if !isempty(bracket.cinderellas) && sum(values(bracket.cinderellas)) > 0
+        total_cind = sum(values(bracket.cinderellas))
+        cpct = total_cind / total_games * 100
+        println("Total Cinderellas: $total_cind/$total_games ($(round(cpct, digits=1))%)")
+    end
+
     println("Expected Score: $(round(bracket.score, digits=2))")
 end
 
@@ -762,29 +854,21 @@ function analyze_bracket(bracket, teams, games)
 end
 
 """
-    run_tournament_optimization(;
-        filepath=nothing,
-        apply_upset_constraints=false,
-        upset_prop=0.5,
-        final_four_teams=nothing,
-        championship_winner=nothing,
-        championship_runner_up=nothing)
+    run_tournament_optimization(; kwargs...)
 
 Run the full tournament optimization with optional constraints.
-Parameters:
-- filepath: Path to 538-style probability data file (uses generated data if nothing)
-- apply_upset_constraints: If true, enforce minimum upsets per round
-- upset_prop: Fraction of games per round that must be upsets (default 0.5)
-- final_four_teams: Dictionary mapping region to seed for Final Four teams
-- championship_winner: Tuple (region, seed) for the championship winner
-- championship_runner_up: Tuple (region, seed) for the championship runner-up
-
 Returns a tuple of (bracket, teams, games).
+
+See `optimize_bracket` for all keyword arguments. Additional:
+- `filepath`: Path to 538-style probability data file (uses generated data if nothing)
 """
 function run_tournament_optimization(;
         filepath=nothing,
         apply_upset_constraints=false,
         upset_prop=0.5,
+        upset_mode=:per_round,
+        cinderella_mode=false,
+        forced_advancements=nothing,
         final_four_teams=nothing,
         championship_winner=nothing,
         championship_runner_up=nothing)
@@ -829,6 +913,9 @@ function run_tournament_optimization(;
         advancement_probs;
         apply_upset_constraints=apply_upset_constraints,
         upset_prop=upset_prop,
+        upset_mode=upset_mode,
+        cinderella_mode=cinderella_mode,
+        forced_advancements=forced_advancements,
         final_four_teams=final_four_teams,
         championship_winner=championship_winner,
         championship_runner_up=championship_runner_up
@@ -859,7 +946,10 @@ function run_with_custom_final_four(; final_four_teams,
         championship_matchup=nothing,
         semifinal_structure=Dict("E" => 61, "MW" => 61, "W" => 62, "S" => 62),
         apply_upset_constraints=false,
-        upset_prop=0.5)
+        upset_prop=0.5,
+        upset_mode=:per_round,
+        cinderella_mode=false,
+        forced_advancements=nothing)
     # Initialize teams and tournament structure
     if filepath !== nothing
         teams, advancement_probs = load_teams_and_probs(filepath)
@@ -1073,20 +1163,64 @@ function run_with_custom_final_four(; final_four_teams,
             println("  Game $g: next_game = $(games[g].next_game), region = $(games[g].region)")
         end
     end
-    
-    # Apply upset constraints if requested
-    if apply_upset_constraints
-        # Modified to add more realistic upset distributions:
-        # Higher upset percentages in early rounds, lower in later rounds
-        upset_percentages = upset_prop*ones(NUM_ROUNDS)
-        
+
+    # Forced advancement constraints
+    if forced_advancements !== nothing
+        for (team_identifier, target_round) in forced_advancements
+            team_id = resolve_team_id(teams, team_identifier)
+            team = teams[team_id]
+            println("  Forcing $(team.name) ($(team.region)$(team.seed)) to reach round $target_round")
+            if target_round >= 2
+                r = target_round - 1
+                start_game = r == 1 ? 1 : sum(GAMES_PER_ROUND[1:(r-1)]) + 1
+                end_game = sum(GAMES_PER_ROUND[1:r])
+                @constraint(model, sum(w[g, team_id] for g in start_game:end_game) >= 1)
+            end
+        end
+    end
+
+    # Cinderella variables
+    if cinderella_mode
+        @variable(model, 1 <= winner_seed[1:TOTAL_GAMES] <= 16)
+        @variable(model, is_cinderella[1:TOTAL_GAMES], Bin)
+
+        for g in 1:TOTAL_GAMES
+            @constraint(model, winner_seed[g] == sum(teams[t].seed * w[g, t] for t in 1:NUM_TEAMS))
+        end
+
         for r in 1:NUM_ROUNDS
+            threshold = CINDERELLA_THRESHOLDS[r]
             start_game = r == 1 ? 1 : sum(GAMES_PER_ROUND[1:(r-1)]) + 1
             end_game = sum(GAMES_PER_ROUND[1:r])
-            
-            # At least the specified percentage of games in this round must be upsets
-            min_upsets = ceil(Int, GAMES_PER_ROUND[r] * upset_percentages[r])
-            @constraint(model, sum(is_upset[g] for g in start_game:end_game) >= min_upsets)
+            for g in start_game:end_game
+                @constraint(model, winner_seed[g] >= threshold + 1 - 16 * (1 - is_cinderella[g]))
+                @constraint(model, winner_seed[g] <= threshold + 16 * is_cinderella[g])
+            end
+        end
+    end
+
+    # Apply quota constraints (upsets or cinderellas)
+    if apply_upset_constraints
+        quota_var = cinderella_mode ? is_cinderella : is_upset
+
+        if upset_mode == :per_round
+            for r in 1:NUM_ROUNDS
+                start_game = r == 1 ? 1 : sum(GAMES_PER_ROUND[1:(r-1)]) + 1
+                end_game = sum(GAMES_PER_ROUND[1:r])
+                min_count = ceil(Int, GAMES_PER_ROUND[r] * upset_prop)
+                @constraint(model, sum(quota_var[g] for g in start_game:end_game) >= min_count)
+            end
+        elseif upset_mode == :per_region
+            for region in REGIONS
+                region_games = [g for g in 1:60 if games[g].region == region]
+                min_count = ceil(Int, length(region_games) * upset_prop)
+                @constraint(model, sum(quota_var[g] for g in region_games) >= min_count)
+            end
+            ff_games = [g for g in 61:63 if g <= TOTAL_GAMES]
+            min_ff = ceil(Int, length(ff_games) * upset_prop)
+            @constraint(model, sum(quota_var[g] for g in ff_games) >= min_ff)
+        else
+            error("Unknown upset_mode: $upset_mode. Valid: :per_round, :per_region")
         end
     end
     
@@ -1122,9 +1256,11 @@ function run_with_custom_final_four(; final_four_teams,
     # Extract the results
     winners = Dict{Int, Int}()
     upsets_by_round = Dict{Int, Int}()
+    cinderellas_by_round = Dict{Int, Int}()
 
     for r in 1:NUM_ROUNDS
         upsets_by_round[r] = 0
+        cinderellas_by_round[r] = 0
         start_game = r == 1 ? 1 : sum(GAMES_PER_ROUND[1:(r-1)]) + 1
         end_game = sum(GAMES_PER_ROUND[1:r])
 
@@ -1135,6 +1271,9 @@ function run_with_custom_final_four(; final_four_teams,
                     if value(is_upset[g]) > 0.5
                         upsets_by_round[r] += 1
                     end
+                    if cinderella_mode && value(is_cinderella[g]) > 0.5
+                        cinderellas_by_round[r] += 1
+                    end
                     break
                 end
             end
@@ -1142,7 +1281,7 @@ function run_with_custom_final_four(; final_four_teams,
     end
 
     score = calculate_bracket_score(winners, teams, advancement_probs)
-    bracket = Bracket(winners, score, upsets_by_round)
+    bracket = Bracket(winners, score, upsets_by_round, cinderellas_by_round)
 
     print_bracket(bracket, teams, games)
     analyze_bracket(bracket, teams, games)
