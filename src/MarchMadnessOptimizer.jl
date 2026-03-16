@@ -233,9 +233,12 @@ end
 """
     load_teams_and_probs(filepath)
 
-Load teams and advancement probabilities from a 538-style data file.
-The file has a header row followed by lines like:
-    1E  Duke              99.5   84.6   69.4   52.5   35.6   22.9
+Load teams and advancement probabilities from a data file.
+Supports two formats:
+- 538-style whitespace-delimited (`.txt`):
+      1E  Duke              99.5   84.6   69.4   52.5   35.6   22.9
+- KenPom-style CSV (`.csv`):
+      1E,Duke,99.1,85.3,69.0,52.7,33.3,21.0
 
 Returns (teams, advancement_probs) in the same Dict formats as
 initialize_teams() and create_realistic_advancement_probs().
@@ -243,13 +246,25 @@ initialize_teams() and create_realistic_advancement_probs().
 function load_teams_and_probs(filepath)
     lines = readlines(filepath)
 
+    # Auto-detect format: CSV if first non-blank line contains commas
+    is_csv = false
+    for line in lines
+        stripped = strip(line)
+        isempty(stripped) && continue
+        if occursin(",", stripped)
+            is_csv = true
+        end
+        break
+    end
+
     # Skip header line(s) and blank lines
     data_lines = String[]
     for line in lines
         stripped = strip(line)
         isempty(stripped) && continue
-        # Skip header: contains "Rd2" or "Swt16"
-        if occursin("Rd2", stripped) || occursin("Swt16", stripped)
+        # Skip header: contains "Rd2" or "Swt16" or "Sweet16" or "Seed_Region"
+        if occursin("Rd2", stripped) || occursin("Swt16", stripped) ||
+           occursin("Sweet16", stripped) || occursin("Seed_Region", stripped)
             continue
         end
         push!(data_lines, line)
@@ -257,30 +272,46 @@ function load_teams_and_probs(filepath)
 
     # Parse each line into (seed, region, name, probs[1:6])
     parsed = []
+
+    # Parse probability values, handling "<.001"
+    function parse_prob(s)
+        s = strip(s)
+        if startswith(s, "<")
+            return 0.0
+        else
+            return parse(Float64, s) / 100.0
+        end
+    end
+
     for line in data_lines
-        # The prefix is like " 1E ", " 1MW", "11MW", "16S " etc.
-        # Use regex to extract seed+region, team name, and 6 probability values
-        m = match(r"^\s*(\d+)(E|W|MW|S)\s+(.+?)\s+([\d.<]+)\s+([\d.<]+)\s+([\d.<]+)\s+([\d.<]+)\s+([\d.<]+)\s+([\d.<]+)\s*$", line)
-        if m === nothing
-            @warn "Could not parse line: $line"
-            continue
-        end
-
-        seed = parse(Int, m[1])
-        region = String(m[2])
-        name = strip(String(m[3]))
-
-        # Parse probability values, handling "<.001"
-        function parse_prob(s)
-            s = strip(s)
-            if startswith(s, "<")
-                return 0.0
-            else
-                return parse(Float64, s) / 100.0
+        if is_csv
+            # CSV format: "1E,Duke,99.1,85.3,69.0,52.7,33.3,21.0"
+            fields = split(line, ",")
+            if length(fields) < 8
+                @warn "Could not parse CSV line: $line"
+                continue
             end
+            m = match(r"^(\d+)(E|W|MW|S)$", strip(fields[1]))
+            if m === nothing
+                @warn "Could not parse seed/region from: $(fields[1])"
+                continue
+            end
+            seed = parse(Int, m[1])
+            region = String(m[2])
+            name = strip(String(fields[2]))
+            probs = [parse_prob(fields[i]) for i in 3:8]
+        else
+            # 538-style whitespace-delimited format
+            m = match(r"^\s*(\d+)(E|W|MW|S)\s+(.+?)\s+([\d.<]+)\s+([\d.<]+)\s+([\d.<]+)\s+([\d.<]+)\s+([\d.<]+)\s+([\d.<]+)\s*$", line)
+            if m === nothing
+                @warn "Could not parse line: $line"
+                continue
+            end
+            seed = parse(Int, m[1])
+            region = String(m[2])
+            name = strip(String(m[3]))
+            probs = [parse_prob(m[i]) for i in 4:9]
         end
-
-        probs = [parse_prob(m[i]) for i in 4:9]
         push!(parsed, (seed=seed, region=region, name=name, probs=probs))
     end
 
