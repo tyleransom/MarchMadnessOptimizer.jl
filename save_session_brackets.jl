@@ -1,5 +1,8 @@
 using MarchMadnessOptimizer
 
+# 2026 bracket: East vs South in one semifinal, Midwest vs West in the other
+const PAIRINGS_2026 = Dict("E" => 61, "S" => 61, "MW" => 62, "W" => 62)
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 function team_str(teams, id)
@@ -20,8 +23,9 @@ function write_bracket_file(path, title, subtitle, bracket, teams, games)
         println(io, "   Expected Score: $(round(bracket.score, digits=2))")
         println(io, "=" ^ 62)
 
-        region_r1   = Dict("E" => 1:8, "W" => 9:16, "MW" => 17:24, "S" => 25:32)
+        region_r1    = Dict("E" => 1:8, "W" => 9:16, "MW" => 17:24, "S" => 25:32)
         region_names = Dict("E"=>"EAST", "W"=>"WEST", "MW"=>"MIDWEST", "S"=>"SOUTH")
+        region_full  = Dict("E"=>"East", "W"=>"West", "MW"=>"Midwest", "S"=>"South")
         round_labels = ["ROUND OF 64", "ROUND OF 32", "SWEET 16", "ELITE 8"]
 
         for region in ["E", "W", "MW", "S"]
@@ -64,19 +68,24 @@ function write_bracket_file(path, title, subtitle, bracket, teams, games)
             println(io, "\n  ★  $(team_str(teams, e8_winner))  →  FINAL FOUR")
         end
 
-        # Final Four
+        # Final Four — derive labels from actual games structure
+        sf1_regions = [games[g].region for g in 57:60 if games[g].next_game == 61]
+        sf2_regions = [games[g].region for g in 57:60 if games[g].next_game == 62]
+        sf1_label = join([region_full[r] for r in sf1_regions], " vs ")
+        sf2_label = join([region_full[r] for r in sf2_regions], " vs ")
+
         println(io)
         println(io, "┌" * "─"^60 * "┐")
         println(io, "│" * lpad("FINAL FOUR", 36) * " "^24 * "│")
         println(io, "└" * "─"^60 * "┘")
 
-        println(io, "\n  SEMIFINAL 1 (East vs Midwest):")
+        println(io, "\n  SEMIFINAL 1 ($sf1_label):")
         ff1 = sort([g for g in 1:62 if games[g].next_game == 61])
         t1, t2 = bracket.winners[ff1[1]], bracket.winners[ff1[2]]
         w61 = bracket.winners[61]; l61 = (w61==t1) ? t2 : t1
         println(io, "    $(rpad(team_str(teams,t1),25)) vs  $(rpad(team_str(teams,t2),22))→  $(team_str(teams,w61))$(upset_marker(teams,w61,l61))")
 
-        println(io, "\n  SEMIFINAL 2 (West vs South):")
+        println(io, "\n  SEMIFINAL 2 ($sf2_label):")
         ff2 = sort([g for g in 1:62 if games[g].next_game == 62])
         t1, t2 = bracket.winners[ff2[1]], bracket.winners[ff2[2]]
         w62 = bracket.winners[62]; l62 = (w62==t1) ? t2 : t1
@@ -105,6 +114,7 @@ println("Running Bracket 1: Illinois wins it all…")
 b1, t1, g1 = redirect_stdout(devnull) do
     run_tournament_optimization(
         filepath="data/kenpom_2026.csv",
+        semifinal_pairings=PAIRINGS_2026,
         apply_upset_constraints=true,
         upset_prop=0.5,
         championship_winner=("S", 3),
@@ -116,6 +126,7 @@ println("Running Bracket 2: Purdue wins it all…")
 b2, t2, g2 = redirect_stdout(devnull) do
     run_tournament_optimization(
         filepath="data/kenpom_2026.csv",
+        semifinal_pairings=PAIRINGS_2026,
         apply_upset_constraints=true,
         upset_prop=0.5,
         championship_winner=("W", 2),
@@ -127,6 +138,7 @@ println("Running Bracket 3: Upsets Lite…")
 b3, t3, g3 = redirect_stdout(devnull) do
     run_tournament_optimization(
         filepath="data/kenpom_2026.csv",
+        semifinal_pairings=PAIRINGS_2026,
         apply_upset_constraints=true,
         upset_prop=1/3,
         upset_mode=:per_region

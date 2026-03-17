@@ -2,7 +2,7 @@
 ==============================================================
    2026 NCAA TOURNAMENT — UPSETS LITE (KenPom Optimal)
    Constraints: 5 upsets per region · 1 upset in Final Four
-   Expected Score: 451.2
+   Expected Score: 449.9
 ==============================================================
 
 ┌────────────────────────────────────────────────────────────┐
@@ -85,12 +85,12 @@
 
   SWEET 16:
     1 Michigan                vs  5 Texas Tech          →  1 Michigan
-    6 Tennessee               vs  2 Iowa St.            →  6 Tennessee  *** UPSET ***
+    6 Tennessee               vs  2 Iowa St.            →  2 Iowa St.
 
   ELITE 8:
-    1 Michigan                vs  6 Tennessee           →  1 Michigan
+    1 Michigan                vs  2 Iowa St.            →  2 Iowa St.  *** UPSET ***
 
-  ★  1 Michigan  →  FINAL FOUR
+  ★  2 Iowa St.  →  FINAL FOUR
 
 ┌────────────────────────────────────────────────────────────┐
 │                        SOUTH REGION                        │
@@ -125,17 +125,17 @@
 │                          FINAL FOUR                        │
 └────────────────────────────────────────────────────────────┘
 
-  SEMIFINAL 1 (East vs Midwest):
-    1 Duke                    vs  1 Michigan            →  1 Duke
+  SEMIFINAL 1 (East vs South):
+    1 Duke                    vs  3 Illinois            →  1 Duke
 
-  SEMIFINAL 2 (West vs South):
-    1 Arizona                 vs  3 Illinois            →  3 Illinois  *** UPSET ***
+  SEMIFINAL 2 (West vs Midwest):
+    1 Arizona                 vs  2 Iowa St.            →  2 Iowa St.  *** UPSET ***
 
 ┌────────────────────────────────────────────────────────────┐
 │                        CHAMPIONSHIP                        │
 └────────────────────────────────────────────────────────────┘
 
-    1 Duke                    vs  3 Illinois            →  1 Duke
+    1 Duke                    vs  2 Iowa St.            →  1 Duke
 
 ==============================================================
    ★ ★ ★   CHAMPION:  1 Duke   ★ ★ ★

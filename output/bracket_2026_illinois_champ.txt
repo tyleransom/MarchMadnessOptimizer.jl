@@ -2,7 +2,7 @@
 ==============================================================
    2026 NCAA TOURNAMENT — ILLINOIS WINS IT ALL
    Constraints: 50% upsets per round · BYU exits round 1 or 2
-   Expected Score: 370.68
+   Expected Score: 372.36
 ==============================================================
 
 ┌────────────────────────────────────────────────────────────┐
@@ -59,9 +59,9 @@
     3 Gonzaga                 vs  2 Purdue              →  3 Gonzaga  *** UPSET ***
 
   ELITE 8:
-    1 Arizona                 vs  3 Gonzaga             →  1 Arizona
+    1 Arizona                 vs  3 Gonzaga             →  3 Gonzaga  *** UPSET ***
 
-  ★  1 Arizona  →  FINAL FOUR
+  ★  3 Gonzaga  →  FINAL FOUR
 
 ┌────────────────────────────────────────────────────────────┐
 │                      MIDWEST REGION                        │
@@ -88,9 +88,9 @@
     6 Tennessee               vs  10 Santa Clara        →  10 Santa Clara  *** UPSET ***
 
   ELITE 8:
-    1 Michigan                vs  10 Santa Clara        →  10 Santa Clara  *** UPSET ***
+    1 Michigan                vs  10 Santa Clara        →  1 Michigan
 
-  ★  10 Santa Clara  →  FINAL FOUR
+  ★  1 Michigan  →  FINAL FOUR
 
 ┌────────────────────────────────────────────────────────────┐
 │                        SOUTH REGION                        │
@@ -125,17 +125,17 @@
 │                          FINAL FOUR                        │
 └────────────────────────────────────────────────────────────┘
 
-  SEMIFINAL 1 (East vs Midwest):
-    1 Duke                    vs  10 Santa Clara        →  1 Duke
+  SEMIFINAL 1 (East vs South):
+    1 Duke                    vs  3 Illinois            →  3 Illinois  *** UPSET ***
 
-  SEMIFINAL 2 (West vs South):
-    1 Arizona                 vs  3 Illinois            →  3 Illinois  *** UPSET ***
+  SEMIFINAL 2 (West vs Midwest):
+    3 Gonzaga                 vs  1 Michigan            →  1 Michigan
 
 ┌────────────────────────────────────────────────────────────┐
 │                        CHAMPIONSHIP                        │
 └────────────────────────────────────────────────────────────┘
 
-    1 Duke                    vs  3 Illinois            →  3 Illinois  *** UPSET ***
+    3 Illinois                vs  1 Michigan            →  3 Illinois  *** UPSET ***
 
 ==============================================================
    ★ ★ ★   CHAMPION:  3 Illinois   ★ ★ ★

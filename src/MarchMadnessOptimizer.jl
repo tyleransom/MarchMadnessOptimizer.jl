@@ -136,66 +136,95 @@ function create_first_round_matchups(teams)
 end
 
 """
-    initialize_tournament_structure()
+    prompt_semifinal_pairings()
+
+Interactively ask the user which regions meet in each Final Four semifinal.
+Returns a Dict mapping region code → semifinal game ID (61 or 62).
+"""
+function prompt_semifinal_pairings()
+    println("\n⚠️  Final Four semifinal matchups are bracket-specific and must be entered manually.")
+    println("   Valid region codes: E (East), W (West), MW (Midwest), S (South)")
+
+    local r1
+    while true
+        print("  Semifinal 1 (game 61) — enter two regions separated by a space (e.g. 'E S'): ")
+        parts = uppercase.(split(strip(readline())))
+        if length(parts) == 2 && all(r -> r in REGIONS, parts) && parts[1] != parts[2]
+            r1 = parts
+            break
+        end
+        println("  Invalid input. Enter exactly two different regions from: $(join(REGIONS, ", "))")
+    end
+
+    r2 = setdiff(REGIONS, r1)
+    println("  Semifinal 2 (game 62) — auto-assigned: $(join(r2, " vs "))")
+
+    pairings = Dict{String,Int}()
+    for r in r1; pairings[r] = 61; end
+    for r in r2; pairings[r] = 62; end
+    println("  ✓ Game 61: $(join(r1, " vs "))   |   Game 62: $(join(r2, " vs "))\n")
+    return pairings
+end
+
+"""
+    initialize_tournament_structure(teams; semifinal_pairings=nothing)
 
 Initialize the full tournament structure with all games.
+`semifinal_pairings` is a Dict mapping region code → semifinal game ID (61 or 62),
+e.g. `Dict("E"=>61, "S"=>61, "MW"=>62, "W"=>62)` for East vs South / Midwest vs West.
+If not provided, defaults to the historical E/MW vs W/S pairing.
 Returns a dictionary mapping game ID to Game object.
 """
-function initialize_tournament_structure(teams)
+function initialize_tournament_structure(teams; semifinal_pairings=nothing)
     games = Dict{Int, Game}()
     first_round_matchups = create_first_round_matchups(teams)
-    
+
+    # Default pairing if none supplied (historical: E/MW → 61, W/S → 62)
+    _pairings = semifinal_pairings !== nothing ? semifinal_pairings :
+                Dict("E" => 61, "MW" => 61, "W" => 62, "S" => 62)
+
     # Initialize first round games (32 games)
     for game_id in 1:32
         region_idx = (game_id - 1) ÷ 8 + 1
         region = REGIONS[region_idx]
         team1_id, team2_id = first_round_matchups[game_id]
         next_game = 32 + (game_id + 1) ÷ 2  # Connect to second round games
-        
+
         games[game_id] = Game(game_id, 1, region, team1_id, team2_id, next_game)
     end
-    
+
     # Initialize second round games (16 games)
     for game_id in 33:48
         region_idx = (game_id - 33) ÷ 4 + 1
         region = REGIONS[region_idx]
         next_game = 48 + (game_id - 32 + 1) ÷ 2  # Connect to Sweet 16 games
-        
+
         games[game_id] = Game(game_id, 2, region, 0, 0, next_game)
     end
-    
+
     # Initialize Sweet 16 games (8 games)
     for game_id in 49:56
         region_idx = (game_id - 49) ÷ 2 + 1
         region = REGIONS[region_idx]
         next_game = 56 + (game_id - 48 + 1) ÷ 2  # Connect to Elite 8 games
-        
+
         games[game_id] = Game(game_id, 3, region, 0, 0, next_game)
     end
-    
-    # Initialize Elite 8 games (4 games)
+
+    # Initialize Elite 8 games (4 games) — winners route to the correct semifinal
     for game_id in 57:60
         region = REGIONS[game_id - 56]
-        
-        # Map regions to semifinals: E and MW to game 61, W and S to game 62
-        if region == "E" || region == "MW"
-            next_game = 61
-        else # region == "W" || region == "S"
-            next_game = 62
-        end
-        
+        next_game = _pairings[region]
         games[game_id] = Game(game_id, 4, region, 0, 0, next_game)
     end
-    
+
     # Initialize Final Four games (2 games)
-    # First semifinal: E vs MW
     games[61] = Game(61, 5, "FF", 0, 0, 63)
-    # Second semifinal: W vs S
     games[62] = Game(62, 5, "FF", 0, 0, 63)
-    
+
     # Initialize Championship game
     games[63] = Game(63, 6, "FF", 0, 0, 0)
-    
+
     return games
 end
 
@@ -541,16 +570,12 @@ function optimize_bracket(teams, games, advancement_probs;
             error("Could not find championship winner team with region $winner_region and seed $winner_seed")
         end
 
-        e_mw_semifinal = 61  # First semifinal: E vs MW
-        w_s_semifinal = 62   # Second semifinal: W vs S
+        # Derive which semifinal each region feeds into from the games structure
+        region_to_semifinal = Dict(games[g].region => games[g].next_game for g in 57:60)
 
         # Winner team wins the championship (game 63) and their semifinal
         @constraint(model, w[63, winner_id] == 1)
-        if winner_region == "E" || winner_region == "MW"
-            @constraint(model, w[e_mw_semifinal, winner_id] == 1)
-        else
-            @constraint(model, w[w_s_semifinal, winner_id] == 1)
-        end
+        @constraint(model, w[region_to_semifinal[winner_region], winner_id] == 1)
 
         # Optionally force the runner-up to reach the championship too
         if championship_runner_up !== nothing
@@ -565,11 +590,10 @@ function optimize_bracket(teams, games, advancement_probs;
             if loser_id == 0
                 error("Could not find championship runner-up team with region $loser_region and seed $loser_seed")
             end
-            if loser_region == "E" || loser_region == "MW"
-                @constraint(model, w[e_mw_semifinal, loser_id] == 1)
-            else
-                @constraint(model, w[w_s_semifinal, loser_id] == 1)
+            if region_to_semifinal[loser_region] == region_to_semifinal[winner_region]
+                error("Championship winner ($winner_region) and runner-up ($loser_region) are in the same semifinal — check semifinal_pairings")
             end
+            @constraint(model, w[region_to_semifinal[loser_region], loser_id] == 1)
         end
     end
     
@@ -907,6 +931,7 @@ See `optimize_bracket` for all keyword arguments. Additional:
 """
 function run_tournament_optimization(;
         filepath=nothing,
+        semifinal_pairings=nothing,
         apply_upset_constraints=false,
         upset_prop=0.5,
         upset_mode=:per_round,
@@ -920,11 +945,15 @@ function run_tournament_optimization(;
     # Initialize teams and tournament structure
     if filepath !== nothing
         teams, advancement_probs = load_teams_and_probs(filepath)
+        # Final Four semifinal pairings are bracket-specific — prompt if not supplied
+        if semifinal_pairings === nothing
+            semifinal_pairings = prompt_semifinal_pairings()
+        end
     else
         teams = initialize_teams()
         advancement_probs = create_realistic_advancement_probs(teams)
     end
-    games = initialize_tournament_structure(teams)
+    games = initialize_tournament_structure(teams; semifinal_pairings=semifinal_pairings)
     
     # Print advancement probabilities by seed
     println("Advancement Probabilities By Seed for Round 1:")

@@ -114,7 +114,13 @@ println("│" * lpad("FINAL FOUR", 36) * " " ^ 24 * "│")
 println("└" * "─" ^ 60 * "┘")
 
 # Semifinal 1 (game 61): E vs MW
-println("\n  SEMIFINAL 1 (East vs Midwest):")
+region_full = Dict("E"=>"East","W"=>"West","MW"=>"Midwest","S"=>"South")
+sf1_regions = [games[g].region for g in 57:60 if games[g].next_game == 61]
+sf2_regions = [games[g].region for g in 57:60 if games[g].next_game == 62]
+sf1_label = join([region_full[r] for r in sf1_regions], " vs ")
+sf2_label = join([region_full[r] for r in sf2_regions], " vs ")
+
+println("\n  SEMIFINAL 1 ($sf1_label):")
 ff1_feeders = sort([g for g in 1:62 if games[g].next_game == 61])
 t1 = bracket.winners[ff1_feeders[1]]
 t2 = bracket.winners[ff1_feeders[2]]
@@ -124,7 +130,7 @@ marker = upset_marker(teams, w61, l61)
 println("    $(rpad(team_str(teams, t1), 25)) vs  $(rpad(team_str(teams, t2), 22))→  $(team_str(teams, w61))$marker")
 
 # Semifinal 2 (game 62): W vs S
-println("\n  SEMIFINAL 2 (West vs South):")
+println("\n  SEMIFINAL 2 ($sf2_label):")
 ff2_feeders = sort([g for g in 1:62 if games[g].next_game == 62])
 t1 = bracket.winners[ff2_feeders[1]]
 t2 = bracket.winners[ff2_feeders[2]]
