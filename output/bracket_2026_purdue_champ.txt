@@ -1,0 +1,143 @@
+
+==============================================================
+   2026 NCAA TOURNAMENT — PURDUE WINS IT ALL
+   Constraints: 50% upsets per round · BYU exits round 1 or 2
+   Expected Score: 360.97
+==============================================================
+
+┌────────────────────────────────────────────────────────────┐
+│                         EAST REGION                        │
+└────────────────────────────────────────────────────────────┘
+
+  ROUND OF 64:
+    1 Duke                    vs  16 Siena              →  1 Duke
+    8 Ohio St.                vs  9 TCU                 →  9 TCU  *** UPSET ***
+    5 St. John's              vs  12 Northern Iowa      →  12 Northern Iowa  *** UPSET ***
+    4 Kansas                  vs  13 Cal Baptist        →  13 Cal Baptist  *** UPSET ***
+    6 Louisville              vs  11 South Florida      →  11 South Florida  *** UPSET ***
+    3 Michigan St.            vs  14 North Dakota St.   →  14 North Dakota St.  *** UPSET ***
+    7 UCLA                    vs  10 UCF                →  10 UCF  *** UPSET ***
+    2 Connecticut             vs  15 Furman             →  15 Furman  *** UPSET ***
+
+  ROUND OF 32:
+    1 Duke                    vs  9 TCU                 →  1 Duke
+    12 Northern Iowa          vs  13 Cal Baptist        →  13 Cal Baptist  *** UPSET ***
+    11 South Florida          vs  14 North Dakota St.   →  14 North Dakota St.  *** UPSET ***
+    10 UCF                    vs  15 Furman             →  15 Furman  *** UPSET ***
+
+  SWEET 16:
+    1 Duke                    vs  13 Cal Baptist        →  1 Duke
+    14 North Dakota St.       vs  15 Furman             →  15 Furman  *** UPSET ***
+
+  ELITE 8:
+    1 Duke                    vs  15 Furman             →  1 Duke
+
+  ★  1 Duke  →  FINAL FOUR
+
+┌────────────────────────────────────────────────────────────┐
+│                         WEST REGION                        │
+└────────────────────────────────────────────────────────────┘
+
+  ROUND OF 64:
+    1 Arizona                 vs  16 LIU                →  1 Arizona
+    8 Villanova               vs  9 Utah St.            →  9 Utah St.  *** UPSET ***
+    5 Wisconsin               vs  12 High Point         →  5 Wisconsin
+    4 Arkansas                vs  13 Hawaii             →  4 Arkansas
+    6 BYU                     vs  11 N.C. State         →  11 N.C. State  *** UPSET ***
+    3 Gonzaga                 vs  14 Kennesaw St.       →  14 Kennesaw St.  *** UPSET ***
+    7 Miami FL                vs  10 Missouri           →  10 Missouri  *** UPSET ***
+    2 Purdue                  vs  15 Queens             →  2 Purdue
+
+  ROUND OF 32:
+    1 Arizona                 vs  9 Utah St.            →  1 Arizona
+    5 Wisconsin               vs  4 Arkansas            →  5 Wisconsin  *** UPSET ***
+    11 N.C. State             vs  14 Kennesaw St.       →  14 Kennesaw St.  *** UPSET ***
+    10 Missouri               vs  2 Purdue              →  2 Purdue
+
+  SWEET 16:
+    1 Arizona                 vs  5 Wisconsin           →  1 Arizona
+    14 Kennesaw St.           vs  2 Purdue              →  2 Purdue
+
+  ELITE 8:
+    1 Arizona                 vs  2 Purdue              →  2 Purdue  *** UPSET ***
+
+  ★  2 Purdue  →  FINAL FOUR
+
+┌────────────────────────────────────────────────────────────┐
+│                      MIDWEST REGION                        │
+└────────────────────────────────────────────────────────────┘
+
+  ROUND OF 64:
+    1 Michigan                vs  16 UMBC               →  1 Michigan
+    8 Georgia                 vs  9 Saint Louis         →  9 Saint Louis  *** UPSET ***
+    5 Texas Tech              vs  12 Akron              →  5 Texas Tech
+    4 Alabama                 vs  13 Hofstra            →  4 Alabama
+    6 Tennessee               vs  11 SMU                →  6 Tennessee
+    3 Virginia                vs  14 Wright St.         →  3 Virginia
+    7 Kentucky                vs  10 Santa Clara        →  10 Santa Clara  *** UPSET ***
+    2 Iowa St.                vs  15 Tennessee St.      →  2 Iowa St.
+
+  ROUND OF 32:
+    1 Michigan                vs  9 Saint Louis         →  1 Michigan
+    5 Texas Tech              vs  4 Alabama             →  5 Texas Tech  *** UPSET ***
+    6 Tennessee               vs  3 Virginia            →  6 Tennessee  *** UPSET ***
+    10 Santa Clara            vs  2 Iowa St.            →  2 Iowa St.
+
+  SWEET 16:
+    1 Michigan                vs  5 Texas Tech          →  5 Texas Tech  *** UPSET ***
+    6 Tennessee               vs  2 Iowa St.            →  6 Tennessee  *** UPSET ***
+
+  ELITE 8:
+    5 Texas Tech              vs  6 Tennessee           →  6 Tennessee  *** UPSET ***
+
+  ★  6 Tennessee  →  FINAL FOUR
+
+┌────────────────────────────────────────────────────────────┐
+│                        SOUTH REGION                        │
+└────────────────────────────────────────────────────────────┘
+
+  ROUND OF 64:
+    1 Florida                 vs  16 Lehigh             →  1 Florida
+    8 Clemson                 vs  9 Iowa                →  9 Iowa  *** UPSET ***
+    5 Vanderbilt              vs  12 McNeese            →  5 Vanderbilt
+    4 Nebraska                vs  13 Troy               →  4 Nebraska
+    6 North Carolina          vs  11 VCU                →  11 VCU  *** UPSET ***
+    3 Illinois                vs  14 Penn               →  3 Illinois
+    7 Saint Mary's            vs  10 Texas A&M          →  10 Texas A&M  *** UPSET ***
+    2 Houston                 vs  15 Idaho              →  2 Houston
+
+  ROUND OF 32:
+    1 Florida                 vs  9 Iowa                →  1 Florida
+    5 Vanderbilt              vs  4 Nebraska            →  5 Vanderbilt  *** UPSET ***
+    11 VCU                    vs  3 Illinois            →  3 Illinois
+    10 Texas A&M              vs  2 Houston             →  2 Houston
+
+  SWEET 16:
+    1 Florida                 vs  5 Vanderbilt          →  1 Florida
+    3 Illinois                vs  2 Houston             →  3 Illinois  *** UPSET ***
+
+  ELITE 8:
+    1 Florida                 vs  3 Illinois            →  1 Florida
+
+  ★  1 Florida  →  FINAL FOUR
+
+┌────────────────────────────────────────────────────────────┐
+│                          FINAL FOUR                        │
+└────────────────────────────────────────────────────────────┘
+
+  SEMIFINAL 1 (East vs Midwest):
+    1 Duke                    vs  6 Tennessee           →  1 Duke
+
+  SEMIFINAL 2 (West vs South):
+    2 Purdue                  vs  1 Florida             →  2 Purdue  *** UPSET ***
+
+┌────────────────────────────────────────────────────────────┐
+│                        CHAMPIONSHIP                        │
+└────────────────────────────────────────────────────────────┘
+
+    1 Duke                    vs  2 Purdue              →  2 Purdue  *** UPSET ***
+
+==============================================================
+   ★ ★ ★   CHAMPION:  2 Purdue   ★ ★ ★
+==============================================================
+

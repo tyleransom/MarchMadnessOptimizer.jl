@@ -409,6 +409,7 @@ function optimize_bracket(teams, games, advancement_probs;
                          upset_mode=:per_round,
                          cinderella_mode=false,
                          forced_advancements=nothing,
+                         max_advancements=nothing,
                          final_four_teams=nothing,
                          championship_winner=nothing,
                          championship_runner_up=nothing)
@@ -525,54 +526,50 @@ function optimize_bracket(teams, games, advancement_probs;
     end
     
     # Add constraints for championship game if requested
-    if championship_winner !== nothing && championship_runner_up !== nothing
+    if championship_winner !== nothing
         winner_region, winner_seed = championship_winner
-        loser_region, loser_seed = championship_runner_up
-        
-        # Find team IDs for winner and runner-up
+
+        # Find team ID for winner
         winner_id = 0
-        loser_id = 0
-        
         for (id, team) in teams
             if team.region == winner_region && team.seed == winner_seed
                 winner_id = id
-            elseif team.region == loser_region && team.seed == loser_seed
-                loser_id = id
+                break
             end
         end
-        
         if winner_id == 0
             error("Could not find championship winner team with region $winner_region and seed $winner_seed")
         end
-        if loser_id == 0
-            error("Could not find championship runner-up team with region $loser_region and seed $loser_seed")
-        end
-        
-        # Championship game is game 63
-        championship_game = 63
-        
-        # Winner team wins the championship
-        @constraint(model, w[championship_game, winner_id] == 1)
-        
-        # Both teams must play in the championship game
-        # This means they must win their semifinal games
-        
-        # Determine which semifinal games these teams would be in
-        # Assuming Final Four matchups: E vs MW and W vs S
+
         e_mw_semifinal = 61  # First semifinal: E vs MW
         w_s_semifinal = 62   # Second semifinal: W vs S
-        
-        # Constrain the winner and runner-up to win their respective semifinal games
+
+        # Winner team wins the championship (game 63) and their semifinal
+        @constraint(model, w[63, winner_id] == 1)
         if winner_region == "E" || winner_region == "MW"
             @constraint(model, w[e_mw_semifinal, winner_id] == 1)
-        else # winner is from W or S
+        else
             @constraint(model, w[w_s_semifinal, winner_id] == 1)
         end
-        
-        if loser_region == "E" || loser_region == "MW"
-            @constraint(model, w[e_mw_semifinal, loser_id] == 1)
-        else # loser is from W or S
-            @constraint(model, w[w_s_semifinal, loser_id] == 1)
+
+        # Optionally force the runner-up to reach the championship too
+        if championship_runner_up !== nothing
+            loser_region, loser_seed = championship_runner_up
+            loser_id = 0
+            for (id, team) in teams
+                if team.region == loser_region && team.seed == loser_seed
+                    loser_id = id
+                    break
+                end
+            end
+            if loser_id == 0
+                error("Could not find championship runner-up team with region $loser_region and seed $loser_seed")
+            end
+            if loser_region == "E" || loser_region == "MW"
+                @constraint(model, w[e_mw_semifinal, loser_id] == 1)
+            else
+                @constraint(model, w[w_s_semifinal, loser_id] == 1)
+            end
         end
     end
     
@@ -589,6 +586,21 @@ function optimize_bracket(teams, games, advancement_probs;
                 start_game = r == 1 ? 1 : sum(GAMES_PER_ROUND[1:(r-1)]) + 1
                 end_game = sum(GAMES_PER_ROUND[1:r])
                 @constraint(model, sum(w[g, team_id] for g in start_game:end_game) >= 1)
+            end
+        end
+    end
+
+    # Max advancement constraints (team cannot win any game beyond a given round)
+    # e.g. max_advancements = Dict("BYU" => 1) means BYU can win at most their round-1 game
+    if max_advancements !== nothing
+        for (team_identifier, max_round) in max_advancements
+            team_id = resolve_team_id(teams, team_identifier)
+            team = teams[team_id]
+            println("  Capping $(team.name) ($(team.region)$(team.seed)) at max round $max_round (loses in round $(max_round) or $(max_round+1))")
+            for r in (max_round+1):NUM_ROUNDS
+                start_game = r == 1 ? 1 : sum(GAMES_PER_ROUND[1:(r-1)]) + 1
+                end_game = sum(GAMES_PER_ROUND[1:r])
+                @constraint(model, sum(w[g, team_id] for g in start_game:end_game) == 0)
             end
         end
     end
@@ -900,6 +912,7 @@ function run_tournament_optimization(;
         upset_mode=:per_round,
         cinderella_mode=false,
         forced_advancements=nothing,
+        max_advancements=nothing,
         final_four_teams=nothing,
         championship_winner=nothing,
         championship_runner_up=nothing)
@@ -929,12 +942,14 @@ function run_tournament_optimization(;
         end
     end
     
-    if championship_winner !== nothing && championship_runner_up !== nothing
+    if championship_winner !== nothing
         println("\nApplying Championship Game Constraint:")
         winner_region, winner_seed = championship_winner
-        loser_region, loser_seed = championship_runner_up
         println("  Winner: $(winner_region)$(winner_seed)")
-        println("  Runner-up: $(loser_region)$(loser_seed)")
+        if championship_runner_up !== nothing
+            loser_region, loser_seed = championship_runner_up
+            println("  Runner-up: $(loser_region)$(loser_seed)")
+        end
     end
     
     # Optimize the bracket
@@ -947,6 +962,7 @@ function run_tournament_optimization(;
         upset_mode=upset_mode,
         cinderella_mode=cinderella_mode,
         forced_advancements=forced_advancements,
+        max_advancements=max_advancements,
         final_four_teams=final_four_teams,
         championship_winner=championship_winner,
         championship_runner_up=championship_runner_up
