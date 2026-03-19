@@ -116,14 +116,15 @@ b, t, g = redirect_stdout(devnull) do
         filepath="data/kenpom_2026.csv",
         semifinal_pairings=PAIRINGS_2026,
         apply_upset_constraints=true,
-        upset_prop=1/3,
-        upset_mode=:per_round
+        upset_prop=1/4,
+        upset_mode=:per_round,
+        max_advancements=Dict("SMU" => 1, "Louisville" => 2)
     )
 end
 
 write_bracket_file(
     "output/bracket_2026_upsets_lite_v2.txt",
     "2026 NCAA TOURNAMENT — UPSETS LITE v2 (KenPom Optimal)",
-    "Constraints: ~1/3 upsets per round",
+    "Constraints: ~1/4 upsets per round · SMU exits R1/R2 · Louisville exits by Sweet 16",
     b, t, g
 )
